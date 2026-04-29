@@ -381,14 +381,22 @@ textarea {
 }
 
 .player {
+  position: relative;
   border-radius: 8px;
   overflow: hidden;
   background: black;
+  padding-bottom: 56.25%;
+  height: 0;
 }
 
 .player iframe {
-  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
   border: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .player-fallback {
@@ -402,6 +410,40 @@ textarea {
 
 .player-fallback:hover {
   color: var(--accent);
+}
+
+.player {
+  position: relative;
+}
+
+.player.failed iframe {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.embed-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--panel-2);
+  padding: 24px;
+  text-align: center;
+  border-radius: 8px;
+}
+
+.embed-overlay-msg {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+  max-width: 320px;
+  line-height: 1.4;
 }
 
 .search-link {
@@ -812,6 +854,9 @@ textarea {
   box-shadow: var(--shadow);
   z-index: 10;
   font-weight: 500;
+  max-width: calc(100vw - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .word-pop-orig {
@@ -979,4 +1024,148 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ===== Mobile / narrow-viewport tweaks ===== */
+@media (max-width: 640px) {
+  .App {
+    padding: 16px 14px 48px;
+  }
+  .header h1 {
+    font-size: 22px;
+  }
+  .tagline {
+    font-size: 14px;
+    margin-bottom: 18px;
+  }
+  .main {
+    gap: 14px;
+  }
+  .field > span {
+    font-size: 12px;
+  }
+  textarea {
+    min-height: 120px;
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
+  }
+  input,
+  select,
+  .lang-trigger {
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
+  }
+  .primary {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    align-self: stretch;
+  }
+  .result {
+    padding: 14px;
+    border-radius: 10px;
+  }
+  .row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .row-head {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .speak-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .speak-controls .ghost {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .ghost {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  .share-btn {
+    margin-left: 0;
+  }
+  .image-row {
+    gap: 8px;
+  }
+  .image-btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 10px 12px;
+  }
+  .image-row .muted {
+    flex-basis: 100%;
+    text-align: center;
+    font-size: 12px;
+  }
+  .tone-pills {
+    gap: 4px;
+  }
+  .tone-pill {
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 8px 10px;
+  }
+  .extra-picker {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .karaoke-list {
+    max-height: 60vh;
+    padding: 14px 10px;
+    gap: 12px;
+  }
+  .karaoke-original {
+    font-size: 16px;
+  }
+  .karaoke-translated {
+    font-size: 12px;
+  }
+  .lang-panel {
+    /* keep dropdown clear of viewport edges */
+    max-height: 70vh;
+    overflow: hidden;
+  }
+  .lang-list {
+    max-height: calc(70vh - 60px);
+  }
+  .embed-overlay {
+    padding: 16px;
+    gap: 10px;
+  }
+  .embed-overlay-msg {
+    font-size: 13px;
+  }
+  .word-pop {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+  .song-links {
+    gap: 6px;
+  }
+  .link-pill {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  .extra-row {
+    padding-top: 10px;
+  }
+  details.sources summary {
+    padding: 8px 0;
+  }
+}
+
+/* Very narrow phones */
+@media (max-width: 380px) {
+  .App {
+    padding: 12px 10px 40px;
+  }
+  .header h1 {
+    font-size: 20px;
+  }
+  .tone-pill {
+    font-size: 12px;
+    padding: 7px 8px;
+  }
 }

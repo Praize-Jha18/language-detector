@@ -739,6 +739,7 @@ function App() {
   const playerPollRef = useRef<number | null>(null);
   const karaokeListRef = useRef<HTMLOListElement>(null);
   const karaokeFetchedRef = useRef<string>('');
+  const [embedError, setEmbedError] = useState<number | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1152,48 +1153,66 @@ If no speech is heard, set translation to "(no speech detected)" and detectedLan
   }, [result, target, tone]);
 
   useEffect(() => {
-    if (!karaokeMode || karaoke.status !== 'ready' || !result?.youtubeVideoId) return;
+    setEmbedError(null);
+    if (!result?.youtubeVideoId) return;
     let cancelled = false;
     let player: any = null;
     (async () => {
       const YT = await loadYouTubeApi();
       if (cancelled) return;
-      player = new YT.Player('karaoke-player', {
-        events: {
-          onReady: () => {
-            playerRef.current = player;
-            playerPollRef.current = window.setInterval(() => {
-              try {
-                const t = player.getCurrentTime();
-                const lines = karaoke.lines;
-                let idx = -1;
-                for (let i = 0; i < lines.length; i++) {
-                  if (lines[i].time <= t) idx = i;
-                  else break;
-                }
-                setActiveIdx(idx);
-              } catch {
-                /* player not ready */
-              }
-            }, 200);
+      try {
+        player = new YT.Player('karaoke-player', {
+          events: {
+            onReady: () => {
+              playerRef.current = player;
+            },
+            onError: (e: any) => {
+              setEmbedError(typeof e?.data === 'number' ? e.data : -1);
+            },
           },
-        },
-      });
+        });
+      } catch {
+        /* construction failed */
+      }
     })();
     return () => {
       cancelled = true;
-      if (playerPollRef.current) {
-        window.clearInterval(playerPollRef.current);
-        playerPollRef.current = null;
-      }
       try {
-        playerRef.current?.destroy?.();
+        player?.destroy?.();
       } catch {
         /* ignore */
       }
       playerRef.current = null;
     };
-  }, [karaokeMode, karaoke, result]);
+  }, [result?.youtubeVideoId]);
+
+  useEffect(() => {
+    if (!karaokeMode || karaoke.status !== 'ready' || embedError !== null) return;
+    if (playerPollRef.current) window.clearInterval(playerPollRef.current);
+    playerPollRef.current = window.setInterval(() => {
+      const player = playerRef.current;
+      if (!player?.getCurrentTime) return;
+      try {
+        const t = player.getCurrentTime();
+        if (typeof t !== 'number') return;
+        const lines = karaoke.lines;
+        let idx = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].time <= t) idx = i;
+          else break;
+        }
+        setActiveIdx(idx);
+      } catch {
+        /* ignore */
+      }
+    }, 200);
+    return () => {
+      if (playerPollRef.current) {
+        window.clearInterval(playerPollRef.current);
+        playerPollRef.current = null;
+      }
+    };
+  }, [karaokeMode, karaoke, embedError]);
 
   useEffect(() => {
     if (!karaokeMode || activeIdx < 0) return;
@@ -1678,17 +1697,36 @@ Marked line: "${line.original}"`;
                   result.verification.confidence !== 'low' &&
                   /^[A-Za-z0-9_-]{11}$/.test(result.youtubeVideoId) && (
                     <>
-                      <div className="player">
+                      <div className={`player${embedError !== null ? ' failed' : ''}`}>
                         <iframe
                           id="karaoke-player"
                           title="Song player"
-                          width="100%"
-                          height="315"
                           src={`https://www.youtube.com/embed/${result.youtubeVideoId}?enablejsapi=1&modestbranding=1&origin=${encodeURIComponent(window.location.origin)}`}
-                          frameBorder={0}
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                           allowFullScreen
                         />
+                        {embedError !== null && (
+                          <div className="embed-overlay">
+                            <p className="embed-overlay-msg">
+                              ⚠ This video can't be embedded
+                              {embedError === 101 || embedError === 150
+                                ? ' — the uploader disabled embedding.'
+                                : embedError === 100
+                                ? ' — video not found or removed.'
+                                : '.'}
+                            </p>
+                            <a
+                              className="link-pill"
+                              href={`https://www.youtube.com/watch?v=${result.youtubeVideoId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              ▶ Open on YouTube
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                      {embedError === null && (
                         <a
                           className="muted player-fallback"
                           href={`https://www.youtube.com/watch?v=${result.youtubeVideoId}`}
@@ -1697,14 +1735,14 @@ Marked line: "${line.original}"`;
                         >
                           Embed says "unavailable"? Open on YouTube ↗
                         </a>
-                      </div>
-                      {karaoke.status === 'loading' && (
+                      )}
+                      {embedError === null && karaoke.status === 'loading' && (
                         <p className="muted">Loading synced lyrics…</p>
                       )}
-                      {karaoke.status === 'unavailable' && (
+                      {embedError === null && karaoke.status === 'unavailable' && (
                         <p className="muted">No synced lyrics available for this track on LRCLIB.</p>
                       )}
-                      {karaoke.status === 'ready' && (
+                      {embedError === null && karaoke.status === 'ready' && (
                         <button
                           type="button"
                           className="ghost"
@@ -1713,7 +1751,7 @@ Marked line: "${line.original}"`;
                           {karaokeMode ? '← Back to translation view' : '🎤 Karaoke mode'}
                         </button>
                       )}
-                      {karaokeMode && karaoke.status === 'ready' && (
+                      {embedError === null && karaokeMode && karaoke.status === 'ready' && (
                         <ol className="karaoke-list" ref={karaokeListRef}>
                           {karaoke.lines.map((line, i) => (
                             <li
