@@ -41,12 +41,19 @@ exports.handler = async (event) => {
     model,
   )}:generateContent?key=${encodeURIComponent(key)}`;
 
+  // Free Netlify functions hard-stop at 10s. Bail early at 9s so the client
+  // gets a clean status and can fall back to the next model immediately.
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 9000);
+
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ctrl.signal,
     });
+    clearTimeout(timeoutId);
     const text = await res.text();
     return {
       statusCode: res.status,
@@ -54,6 +61,13 @@ exports.handler = async (event) => {
       body: text,
     };
   } catch (e) {
+    clearTimeout(timeoutId);
+    if (e && e.name === 'AbortError') {
+      return {
+        statusCode: 408,
+        body: JSON.stringify({ error: `Upstream took >9s (${model}) — try a faster model.` }),
+      };
+    }
     return {
       statusCode: 502,
       body: JSON.stringify({ error: `Upstream fetch failed: ${String(e)}` }),

@@ -3,12 +3,25 @@ import './App.css';
 
 const GEMINI_PROXY_URL = '/.netlify/functions/gemini';
 const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+// Grounded (google_search) calls: skip lite (no tools support); 2.0-flash is faster on free tier.
+const GROUNDED_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash'];
 const HISTORY_KEY = 'lang_history_v1';
 const HISTORY_LIMIT = 10;
 const RETRY_DELAYS_MS = [800, 2000, 4000];
 
 type LyricLine = { original: string; translated: string };
 type Confidence = 'high' | 'medium' | 'low';
+type Provider = 'gemini' | 'google-translate' | 'mymemory';
+
+const PROVIDER_LABELS: Record<Provider, string> = {
+  gemini: 'Gemini 2.5',
+  'google-translate': 'Google Translate',
+  mymemory: 'MyMemory',
+};
+
+const PROVIDER_LINKS: Partial<Record<Provider, string>> = {
+  mymemory: 'https://mymemory.translated.net',
+};
 type SongSource = { uri: string; title?: string };
 
 type Verification = {
@@ -29,6 +42,7 @@ type Result = {
   youtubeVideoId?: string;
   lines?: LyricLine[];
   verification?: Verification;
+  provider?: Provider;
 };
 
 type HistoryItem = {
@@ -88,6 +102,120 @@ const LANG_FLAGS: Record<string, string> = {
   Hausa: '🇳🇬',
   Swahili: '🇰🇪',
 };
+
+const LANG_TO_ISO: Record<string, string> = {
+  English: 'en',
+  Spanish: 'es',
+  French: 'fr',
+  German: 'de',
+  Italian: 'it',
+  Portuguese: 'pt',
+  Dutch: 'nl',
+  Russian: 'ru',
+  Japanese: 'ja',
+  Korean: 'ko',
+  'Chinese (Simplified)': 'zh-CN',
+  Arabic: 'ar',
+  Hindi: 'hi',
+  Yoruba: 'yo',
+  Igbo: 'ig',
+  Hausa: 'ha',
+  Swahili: 'sw',
+};
+
+const ISO_TO_LANG: Record<string, string> = Object.fromEntries(
+  Object.entries(LANG_TO_ISO).map(([k, v]) => [v.toLowerCase(), k]),
+);
+
+function isQuotaError(err: unknown): boolean {
+  const msg = String((err as any)?.message ?? err ?? '');
+  return /\b429\b|quota|RESOURCE_EXHAUSTED|exceed|rate limit/i.test(msg);
+}
+
+function friendlyError(raw: string): string {
+  if (!raw) return 'Something went wrong.';
+  if (/\b429\b|quota|RESOURCE_EXHAUSTED|exceed|rate limit/i.test(raw))
+    return 'Gemini quota reached for now. Daily limit resets at midnight Pacific time. Falling back to MyMemory…';
+  if (/\b503\b|UNAVAILABLE|overload/i.test(raw))
+    return 'Gemini is busy. Retrying automatically…';
+  if (/\b500\b|internal/i.test(raw))
+    return 'Server hiccup. Try again in a moment.';
+  if (/Network|Failed to fetch|NetworkError/i.test(raw))
+    return 'Network error — check your connection.';
+  if (/Missing.*GEMINI|server missing/i.test(raw))
+    return 'Server not configured. Check Netlify env vars.';
+  if (/Couldn.t find lyrics/i.test(raw))
+    return raw;
+  return raw.length > 140 ? raw.slice(0, 140) + '…' : raw;
+}
+
+const TRANSLATE_PROXY_URL = '/.netlify/functions/translate';
+
+async function googleTranslate(text: string, sourceIso: string, targetIso: string): Promise<string> {
+  const res = await fetch(TRANSLATE_PROXY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: text, source: sourceIso || 'auto', target: targetIso }),
+  });
+  if (!res.ok) throw new Error(`Google Translate ${res.status}`);
+  const data = await res.json();
+  const t = data?.data?.translations?.[0]?.translatedText;
+  if (typeof t !== 'string') throw new Error('Google Translate: empty response');
+  return t;
+}
+
+export type FallbackProvider = 'google' | 'mymemory';
+
+async function fallbackTranslate(
+  text: string,
+  sourceIso: string,
+  targetIso: string,
+): Promise<{ text: string; provider: FallbackProvider }> {
+  try {
+    return { text: await googleTranslate(text, sourceIso, targetIso), provider: 'google' };
+  } catch {
+    return {
+      text: await myMemoryTranslate(text, sourceIso, targetIso),
+      provider: 'mymemory',
+    };
+  }
+}
+
+const MYMEMORY_CHUNK = 480; // free-tier per-request limit ~500 chars
+
+async function myMemoryTranslate(text: string, sourceIso: string, targetIso: string): Promise<string> {
+  if (!text.trim()) return '';
+  const langpair = `${sourceIso || 'auto'}|${targetIso}`;
+  // chunk by sentences/lines so each request stays under MyMemory's free limit
+  const chunks: string[] = [];
+  let buf = '';
+  for (const part of text.split(/(\n|(?<=[.!?])\s+)/)) {
+    if ((buf + part).length > MYMEMORY_CHUNK) {
+      if (buf) chunks.push(buf);
+      buf = part;
+    } else {
+      buf += part;
+    }
+  }
+  if (buf) chunks.push(buf);
+
+  const out: string[] = [];
+  for (const chunk of chunks) {
+    if (!chunk.trim()) {
+      out.push(chunk);
+      continue;
+    }
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=${encodeURIComponent(langpair)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`MyMemory ${res.status}`);
+    const json = await res.json();
+    if (json?.responseStatus !== 200 && json?.responseStatus !== '200') {
+      throw new Error(`MyMemory: ${json?.responseDetails ?? 'unknown error'}`);
+    }
+    out.push(json?.responseData?.translatedText ?? '');
+  }
+  return out.join('');
+}
 
 const LANG_TO_BCP47: Record<string, string> = {
   English: 'en-US',
@@ -185,9 +313,9 @@ function loadHistory(): HistoryItem[] {
   }
 }
 
-async function callGemini(body: object): Promise<any> {
+async function callGemini(body: object, models: string[] = GEMINI_MODELS): Promise<any> {
   let lastErr = '';
-  for (const model of GEMINI_MODELS) {
+  for (const model of models) {
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
       const res = await fetch(GEMINI_PROXY_URL, {
         method: 'POST',
@@ -257,6 +385,7 @@ async function translateLines(
   target: string,
   toneLabel: string,
   toneHint: string,
+  sourceLangName?: string,
 ): Promise<string[]> {
   const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join('\n');
   const prompt = `Translate each numbered line below into ${target} in a "${toneLabel}" register: ${toneHint}
@@ -264,26 +393,41 @@ Return ONLY a JSON array of translated strings, in the same order. Same number o
 
 Lines:
 ${numbered}`;
-  const data = await callGemini({
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'ARRAY',
-        items: { type: 'STRING' },
-      },
-      temperature: 0.2,
-    },
-  });
-  const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!txt) return lines.map(() => '');
   try {
-    const arr = JSON.parse(txt);
-    if (Array.isArray(arr)) return arr.map((s) => String(s));
-  } catch {
-    /* ignore */
+    const data = await callGemini({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'ARRAY',
+          items: { type: 'STRING' },
+        },
+        temperature: 0.2,
+      },
+    });
+    const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!txt) return lines.map(() => '');
+    try {
+      const arr = JSON.parse(txt);
+      if (Array.isArray(arr)) return arr.map((s) => String(s));
+    } catch {
+      /* ignore */
+    }
+    return lines.map(() => '');
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    const sourceIso = (sourceLangName && LANG_TO_ISO[sourceLangName]) || 'auto';
+    const targetIso = LANG_TO_ISO[target] ?? 'en';
+    const out: string[] = [];
+    for (const line of lines) {
+      try {
+        out.push(line ? (await fallbackTranslate(line, sourceIso, targetIso)).text : '');
+      } catch {
+        out.push('');
+      }
+    }
+    return out;
   }
-  return lines.map(() => '');
 }
 
 function pcm16ToWavBlob(pcmBase64: string, sampleRate = 24000): Blob {
@@ -351,24 +495,44 @@ async function geminiTTS(text: string, voiceName = 'Aoede'): Promise<Blob> {
 
 async function translateWord(word: string, sourceLang: string, target: string): Promise<string> {
   const prompt = `Translate the single ${sourceLang} word "${word}" into ${target}. Return ONLY the translation (one or two words max, no quotes, no commentary). If it's a name or has no translation, return it unchanged.`;
-  const data = await callGemini({
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0 },
-  });
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  try {
+    const data = await callGemini({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0 },
+    });
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    const sourceIso = LANG_TO_ISO[sourceLang] || 'auto';
+    const targetIso = LANG_TO_ISO[target] ?? 'en';
+    return (await fallbackTranslate(word, sourceIso, targetIso)).text;
+  }
 }
 
-async function translateOnly(text: string, target: string, toneLabel: string, toneHint: string): Promise<string> {
+async function translateOnly(
+  text: string,
+  target: string,
+  toneLabel: string,
+  toneHint: string,
+  sourceLangName?: string,
+): Promise<string> {
   const prompt = `Translate the following text into ${target} in a "${toneLabel}" register: ${toneHint}
 Return ONLY the translation as plain text — no quotes, no commentary, no markdown.
 
 Text:
 """${text}"""`;
-  const data = await callGemini({
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.2 },
-  });
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  try {
+    const data = await callGemini({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2 },
+    });
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    const sourceIso = (sourceLangName && LANG_TO_ISO[sourceLangName]) || 'auto';
+    const targetIso = LANG_TO_ISO[target] ?? 'en';
+    return (await fallbackTranslate(text, sourceIso, targetIso)).text;
+  }
 }
 
 async function fetchLyricsForYoutube(
@@ -394,8 +558,9 @@ If you cannot find the lyrics, return: {"title": "", "artist": "", "lyrics": ""}
       contents: [{ parts: [{ text: prompt }] }],
       tools: [{ google_search: {} }],
       generationConfig: { temperature: 0.1 },
-    });
-  } catch {
+    }, GROUNDED_MODELS);
+  } catch (e) {
+    console.warn('fetchLyricsForYoutube failed:', e);
     return null;
   }
 
@@ -429,7 +594,7 @@ Reply with ONLY the 11-character YouTube video ID — nothing else, no URL, no q
       contents: [{ parts: [{ text: prompt }] }],
       tools: [{ google_search: {} }],
       generationConfig: { temperature: 0 },
-    });
+    }, GROUNDED_MODELS);
     const text =
       (data?.candidates?.[0]?.content?.parts ?? [])
         .map((p: any) => p?.text)
@@ -483,8 +648,9 @@ ${snippet}
       contents: [{ parts: [{ text: prompt }] }],
       tools: [{ google_search: {} }],
       generationConfig: { temperature: 0.1 },
-    });
-  } catch {
+    }, GROUNDED_MODELS);
+  } catch (e) {
+    console.warn('verifySong failed:', e);
     return null;
   }
 
@@ -719,7 +885,21 @@ function App() {
   const [tone, setTone] = useState<ToneId>('neutral');
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [snacks, setSnacks] = useState<Array<{ id: number; kind: 'error' | 'info' | 'success'; message: string }>>([]);
+
+  const showSnack = (kind: 'error' | 'info' | 'success', message: string) => {
+    const id = Date.now() + Math.random();
+    setSnacks((prev) => [...prev, { id, kind, message }]);
+    window.setTimeout(() => {
+      setSnacks((prev) => prev.filter((s) => s.id !== id));
+    }, kind === 'info' ? 7000 : 5500);
+  };
+  const dismissSnack = (id: number) => {
+    setSnacks((prev) => prev.filter((s) => s.id !== id));
+  };
+  const setError = (msg: string | null) => {
+    if (msg) showSnack('error', friendlyError(msg));
+  };
   const [result, setResult] = useState<Result | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   const [speaking, setSpeaking] = useState(false);
@@ -953,6 +1133,7 @@ If no text is visible in the image, set translation to "(no text detected)" and 
       parsed.songTitle = undefined;
       parsed.songArtist = undefined;
       parsed.youtubeVideoId = undefined;
+      parsed.provider = 'gemini';
 
       setText(parsed.translation ? `[Image] ${parsed.detectedLanguage}` : '[Image]');
 
@@ -1082,6 +1263,7 @@ If no speech is heard, set translation to "(no speech detected)" and detectedLan
       parsed.songTitle = undefined;
       parsed.songArtist = undefined;
       parsed.youtubeVideoId = undefined;
+      parsed.provider = 'gemini';
 
       if (parsed.isSong && parsed.lines) {
         setLoadingStage('Identifying song via web search…');
@@ -1317,6 +1499,7 @@ Text:
       parsed.songTitle = undefined;
       parsed.songArtist = undefined;
       parsed.youtubeVideoId = undefined;
+      parsed.provider = 'gemini';
 
       if (parsed.isSong) {
         setLoadingStage('Identifying song via web search…');
@@ -1343,10 +1526,51 @@ Text:
         result: parsed,
       });
     } catch (e: any) {
-      setError(e?.message ?? 'Something went wrong.');
+      if (isQuotaError(e)) {
+        const ok = await analyzeWithFallback(inputText);
+        if (!ok) showSnack('error', friendlyError(String(e?.message ?? e)));
+      } else {
+        showSnack('error', friendlyError(String(e?.message ?? e)));
+      }
     } finally {
       setLoading(false);
       setLoadingStage('');
+    }
+  }
+
+  async function analyzeWithFallback(inputText: string): Promise<boolean> {
+    setLoadingStage('Gemini busy — trying Google Translate…');
+    try {
+      const targetIso = LANG_TO_ISO[target] ?? 'en';
+      const r = await fallbackTranslate(inputText, 'auto', targetIso);
+      if (!r.text) return false;
+      const provider: Provider = r.provider === 'google' ? 'google-translate' : 'mymemory';
+      const providerName = PROVIDER_LABELS[provider];
+      const parsed: Result = {
+        detectedLanguage: `Auto-detected (${providerName})`,
+        translation: r.text,
+        isSong: false,
+        provider,
+      };
+      setResult(parsed);
+      setExplanations({});
+      setExtraTranslations({});
+      fetchedExtrasRef.current = new Set();
+      showSnack(
+        'info',
+        `Using ${providerName} fallback — basic translation only (no song detection, lyrics, or per-line breakdown). Gemini daily limit resets at midnight Pacific time.`,
+      );
+      pushHistory({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: Date.now(),
+        text: inputText,
+        target,
+        result: parsed,
+      });
+      return true;
+    } catch (e: any) {
+      showSnack('error', `Fallback failed: ${friendlyError(String(e?.message ?? e))}`);
+      return false;
     }
   }
 
@@ -1421,7 +1645,7 @@ Marked line: "${line.original}"`;
     <div className="App">
       <header className="header">
         <div className="header-row">
-          <h1>Language Detector</h1>
+          <h1>🗣️ Lingo</h1>
           <button
             type="button"
             className="theme-toggle"
@@ -1544,7 +1768,6 @@ Marked line: "${line.original}"`;
           {loading ? loadingStage || 'Analyzing…' : 'Detect & Translate'}
         </button>
 
-        {error && <div className="error">{error}</div>}
 
         {result && (
           <section
@@ -1604,6 +1827,24 @@ Marked line: "${line.original}"`;
                 </div>
               </div>
               <p className="translation">{result.translation}</p>
+              {result.provider && (
+                <small className="provider-badge">
+                  Translated by <strong>{PROVIDER_LABELS[result.provider]}</strong>
+                  {result.provider !== 'gemini' && ' (fallback)'}
+                  {PROVIDER_LINKS[result.provider] && (
+                    <>
+                      {' · '}
+                      <a
+                        href={PROVIDER_LINKS[result.provider]}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {(PROVIDER_LINKS[result.provider] || '').replace(/^https?:\/\//, '')}
+                      </a>
+                    </>
+                  )}
+                </small>
+              )}
             </div>
 
             {extraTargets.map((lang) => {
@@ -1850,6 +2091,27 @@ Marked line: "${line.original}"`;
           </section>
         )}
       </main>
+
+      {snacks.length > 0 && (
+        <div className="snack-container" role="status" aria-live="polite">
+          {snacks.map((s) => (
+            <div key={s.id} className={`snack snack-${s.kind}`}>
+              <span className="snack-icon" aria-hidden="true">
+                {s.kind === 'error' ? '⚠️' : s.kind === 'success' ? '✓' : 'ℹ️'}
+              </span>
+              <span className="snack-msg">{s.message}</span>
+              <button
+                type="button"
+                className="snack-close"
+                onClick={() => dismissSnack(s.id)}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
