@@ -123,10 +123,6 @@ const LANG_TO_ISO: Record<string, string> = {
   Swahili: 'sw',
 };
 
-const ISO_TO_LANG: Record<string, string> = Object.fromEntries(
-  Object.entries(LANG_TO_ISO).map(([k, v]) => [v.toLowerCase(), k]),
-);
-
 function isQuotaError(err: unknown): boolean {
   const msg = String((err as any)?.message ?? err ?? '');
   return /\b429\b|quota|RESOURCE_EXHAUSTED|exceed|rate limit/i.test(msg);
